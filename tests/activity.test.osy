@@ -1,0 +1,115 @@
+// A record's timeline from the events the app raises: each one a line on the record it is about, and on the record that
+// one rolls up to; said in the reader's words from the event's own sentence; shown only to somebody who may read the
+// record; kept as long as the app says.
+using Osysharp.Identity;
+using Osysharp.RecordTimeline;
+using ActivityKitTests;
+
+[TestFixture]
+void Pipeline() {
+  var ola = new Person { Email = "ola@sales.test", DisplayName = "Ola Strand", CodeHash = Security.HashPassword("1111") };
+  new RoleGrant { Member = ola, Role = SalesRole.Owner };
+  var sam = new Person { Email = "sam@sales.test", DisplayName = "Sam Ek", CodeHash = Security.HashPassword("2222") };
+  new RoleGrant { Member = sam, Role = SalesRole.Rep };
+  var harbour = new Opportunity { Name = "Harbour fit-out" };
+  new Quote { Title = "Q-17 fit-out phase one", Opportunity = harbour };
+  var secret = new Opportunity { Name = "Board-only acquisition", Private = true };
+  new Quote { Title = "Q-18 due diligence", Opportunity = secret };
+}
+
+principal Ola => Person.Single(p => p.Email == "ola@sales.test");
+principal Sam => Person.Single(p => p.Email == "sam@sales.test");
+
+Quote QuoteOf(string title) {
+  Quote? found = null;
+  runas (Ola) { found = Quote.Single(q => q.Title.StartsWith(title)); }
+  return found!;
+}
+
+List<string> SaidOn(Guid record) {
+  List<string> said = [];
+  foreach (var l in ActivityOf(record)) { said.Add(l.Said + (l.From != "" ? " [" + l.From + "]" : "")); }
+  return said;
+}
+
+/// The kit's central promise: an event about a quote is a line on the quote, AND on the opportunity it rolls up
+/// to — each said with the event's own sentence, newest first. The kit names neither the quote nor the event.
+[Test(Pipeline)]
+void a_quote_event_appears_on_its_opportunitys_activity() {
+  var q = QuoteOf("Q-17");
+  runas (Sam) { SendQuote(q); }
+  Background.Settle();
+  runas (Sam) { AcceptQuote(q); }
+  Background.Settle();
+  runas (Sam) {
+    Assert.Equal(["Sam Ek took the yes on Q-17 fit-out phase one.", "Quote sent"], SaidOn(q.Id));
+    var opp = Opportunity.Single(o => o.Name == "Harbour fit-out");
+    Assert.Equal(["Sam Ek took the yes on Q-17 fit-out phase one. [Q-17 fit-out phase one]",
+                  "Quote sent [Q-17 fit-out phase one]"], SaidOn(opp.Id));
+  }
+}
+
+/// A line is said as its READER reads it: the quote renamed since reads with its new name.
+[Test(Pipeline)]
+void a_line_is_said_when_it_is_read() {
+  var q = QuoteOf("Q-17");
+  runas (Sam) { AcceptQuote(q); }
+  Background.Settle();
+  runas (Ola) {
+    var renamed = Quote.Single(x => x.Id == q.Id);
+    renamed.Title = "Q-17 fit-out, all phases";
+    UnitOfWork.Commit();
+  }
+  runas (Sam) { Assert.Equal(["Sam Ek took the yes on Q-17 fit-out, all phases."], SaidOn(q.Id)); }
+}
+
+// SECURITY-INVARIANT(activity-is-shown-only-on-a-record-its-reader-may-read)
+/// Sam may not read the board-only opportunity, nor its quote: their timelines show him nothing — not even that
+/// something happened. Ola, who may, reads both.
+[Test(Pipeline)]
+void nobody_reads_the_activity_of_a_record_they_may_not_read() {
+  var q = QuoteOf("Q-18");
+  runas (Ola) { AcceptQuote(q); }
+  Background.Settle();
+  Guid opp = Guid.Empty;
+  runas (Ola) {
+    opp = Opportunity.Single(o => o.Name == "Board-only acquisition").Id;
+    Assert.Equal(["Ola Strand took the yes on Q-18 due diligence."], SaidOn(q.Id));
+    Assert.Equal(1, SaidOn(opp).Count);
+  }
+  runas (Sam) {
+    Assert.Empty(SaidOn(q.Id));
+    Assert.Empty(SaidOn(opp));
+  }
+}
+
+/// The team keeps a quarter of history (`app.Activity`): a line older than that is removed by the hourly sweep, a newer
+/// one stays. A year — the kit's default — would have kept both.
+[Test(Pipeline)]
+void a_line_older_than_the_app_keeps_is_removed() {
+  Assert.Equal(TimeSpan.FromDays(90), App.Setting<ActivitySetup>().Keep);
+  TestClock.Set(new DateTime(2030, 3, 1, 9, 0, 0));
+  var q = QuoteOf("Q-17");
+  runas (Sam) { SendQuote(q); }
+  Background.Settle();
+  TestClock.Advance(TimeSpan.FromDays(60));
+  runas (Sam) { AcceptQuote(q); }
+  Background.Settle();
+  TestClock.Advance(TimeSpan.FromDays(60));      // "Quote sent" is 120 days old, the yes 60
+  Background.Settle();                           // the hourly sweep runs
+  runas (Sam) { Assert.Equal(["Sam Ek took the yes on Q-17 fit-out phase one."], SaidOn(q.Id)); }
+}
+
+/// The timeline on the quote's page, as Sam reads it.
+[Test(Pipeline)]
+void the_timeline_is_on_the_records_page() {
+  var q = QuoteOf("Q-17");
+  runas (Sam) { SendQuote(q); }
+  Background.Settle();
+  runas (Sam) { AcceptQuote(q); }
+  Background.Settle();
+  Ui.SignInAs(Sam);
+  Ui.Visit("/quotes/" + q.Id);
+  Assert.Visible("Sam Ek took the yes on Q-17 fit-out phase one.");
+  Assert.Visible("Quote sent");
+}

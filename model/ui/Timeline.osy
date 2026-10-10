@@ -1,0 +1,43 @@
+// THE TIMELINE ON A RECORD'S PAGE — what happened to it, newest first, each line in the reader's words; a line that
+// happened to a record this one rolls up to names that record and opens it.
+namespace Osysharp.RecordTimeline;
+
+using Osysharp.Ui;
+
+/// The activity of the record whose id is `record`, newest first — place it where the record is shown:
+/// `ActivityTimeline(quote.Id)`. Shows nothing to a reader who may not read the record.
+[Composable]
+public component ActivityTimeline(Guid record, int take = 50) {
+  List<ActivityLine> lines = [];
+  bool loaded = false;
+  string problem = "";
+  on mount {
+    try { lines = ActivityOf(record, take); } catch (Exception ex) { problem = ex.Message; }
+    loaded = true;
+  }
+  render {
+    Stack(gap: 0, w: "100%", role: UiRole.List, label: "Activity") {
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      if (!loaded) { SkeletonText(); }
+      if (loaded && problem == "" && lines.Count == 0) {
+        Text("Nothing has happened here yet.", fontSize: FontSize.Label, color: Colors.TextMuted);
+      }
+      foreach (var l in lines) {
+        Stack(gap: 1, py: 2, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: l.Said) {
+          Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+            Text(l.Said);
+            Spacer();
+            Text($"{l.At:d MMM HH:mm}", fontSize: FontSize.Caption, color: Colors.TextMuted, whiteSpace: WhiteSpace.Nowrap);
+          }
+          if (l.From != "") {
+            if (l.FromLink != "") {
+              Link(href: l.FromLink) { Text(l.From, fontSize: FontSize.Label, color: Colors.TextSecondary); }
+            } else {
+              Text(l.From, fontSize: FontSize.Label, color: Colors.TextSecondary);
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,97 @@
+namespace ActivityKitTests;
+
+using Osysharp.Identity;
+using Osysharp.RecordTimeline;
+
+// A SMALL SALES TEAM'S PIPELINE — an opportunity, the quotes made for it, and what happens to them. A rep reads the
+// team's opportunities; one marked private is the owner's alone (the case a timeline must never show the wrong person).
+
+[Role] enum SalesRole { Authenticator, Rep, Owner }
+
+policy IsRep => RoleGrant.Any(g => g.Member == user && (g.Role == SalesRole.Rep || g.Role == SalesRole.Owner));
+policy IsOwner => RoleGrant.Any(g => g.Member == user && g.Role == SalesRole.Owner);
+/// The kit's one question: who reads a record's activity.
+policy ReadsActivity => IsRep;
+
+/// Somebody who signs in to the pipeline, with a code — all a test needs.
+entity Person : Principal {
+  [MaxLength(200)] string CodeHash = "";
+  security {
+    allow read when IsAuthenticated || IsAuthenticator;
+    allow create when IsAuthenticator;
+    deny read CodeHash when !IsAuthenticator;
+  }
+}
+
+/// A deal the team is working.
+[Title(Name)]
+entity Opportunity {
+  [Required, MaxLength(120)] string Name;
+  /// Only the owner reads a private one — and its timeline.
+  bool Private;
+  security {
+    allow read, create, update when IsRep where !Private;
+    allow read, create, update when IsOwner;
+  }
+}
+
+/// A quote made for an opportunity. What happens to it is told on the opportunity too.
+[Title(Title)]
+entity Quote {
+  [Required, MaxLength(120)] string Title;
+  [RollsUpTo] Opportunity Opportunity;
+  bool Accepted;
+  security {
+    allow read, create, update when IsRep where !Opportunity.Private;
+    allow read, create, update when IsOwner;
+  }
+}
+
+/// A quote went to the customer.
+[Event("Quote sent")]
+public sealed class QuoteSent { public Quote Quote; }
+
+/// The customer accepted a quote — said with who took the call.
+[Event("Quote accepted")]
+public sealed class QuoteAccepted {
+  public Quote Quote;
+  public Person? By;
+  public override string Sentence() {
+    return By == null ? $"{Quote.Title} was accepted." : $"{By.DisplayName} took the yes on {Quote.Title}.";
+  }
+}
+
+public void SendQuote(Quote q) {
+  Raise(new QuoteSent { Quote = q });
+  UnitOfWork.Commit();
+}
+
+public void AcceptQuote(Quote q) {
+  q.Accepted = true;
+  Raise(new QuoteAccepted { Quote = q, By = Session.CurrentUser as Person });
+  UnitOfWork.Commit();
+}
+
+[AuthMethod]
+string SignInWithCode(string email, string code) {
+  var p = Person.FirstOrDefault(x => x.Email == NormalisedEmail(email));
+  if (p == null || !p.IsActive) { Security.VerifyPassword(code); return ""; }
+  if (!Security.VerifyPassword(code, p.CodeHash)) { return ""; }
+  return Security.IssueJwt(p.Id, p.Email);
+}
+
+// The team keeps a deal's history for a quarter: a line older than that leaves the timeline.
+app.Activity = new ActivitySetup { Keep = TimeSpan.FromDays(90) };
+
+app.AuthBootstrap = new AuthBootstrap { Role = SalesRole.Authenticator, Login = SignInWithCode };
+app.Auth = new PasswordAuth { LoginField = Email, PasswordField = CodeHash };
+app.Audit = new AuditConfig { Redact = new AuditRedaction { Properties = [ActivityKitTests.Person.CodeHash] } };
+app = new() { Classifications = [ new Classification(Personal.Content) { Open = true } ] };
+
+/// A quote's page — its activity under it.
+[Route("/quotes/{id}")] [Opens(Quote)] [Authorize(IsRep)]
+component QuotePage(Guid id) { render { ActivityTimeline(id); } }
+
+/// An opportunity's page — its activity, its quotes' included.
+[Route("/opportunities/{id}")] [Opens(Opportunity)] [Authorize(IsRep)]
+component OpportunityPage(Guid id) { render { ActivityTimeline(id); } }

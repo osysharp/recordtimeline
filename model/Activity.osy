@@ -1,0 +1,156 @@
+namespace Osysharp.RecordTimeline;
+
+using Osysharp.Identity;
+using Osysharp.Workflow;
+
+// THE TIMELINE — one line per event, on the record it is about and on each record that one rolls up to.
+//
+// ⚑ THE LINE KEEPS THE EVENT, NOT ITS WORDS. What it says is the event's own sentence (`e.Sentence()`), said when the line
+//   is READ — in the reader's language, with the event's records read as the reader may read them — so a renamed record
+//   reads with its new name and a reader who may not see a record the event names reads its label alone.
+
+/// Who reads a record's activity. `policy ReadsActivity => IsAgent;`
+policy ReadsActivity;
+
+/// How the timeline is kept — `app.Activity = new ActivitySetup { Keep = TimeSpan.FromDays(90) };`.
+[AppSetting("Activity")]
+public class ActivitySetup {
+  /// How long a line stays on its record's timeline before the hourly sweep removes it. A year by default: a record's
+  /// history is read while it is worked and when it is looked back on — a renewal, an audit, last year's same complaint —
+  /// and every line goes with its record anyway. A line holds what its event carried, which can be personal: shorten
+  /// this when the app keeps records longer than their history is worth.
+  public TimeSpan Keep = TimeSpan.FromDays(365);
+}
+
+/// One event on one record's timeline. Written by the kit's own handler, as the app — nobody else writes one.
+public entity ActivityEntry {
+  /// The record whose timeline it is on. A line goes with its record.
+  [Required, OnDelete(Remove)] Entity About;
+  /// The record the event was about, when this is a line on a record it rolls up to — none on the record's own.
+  [OnDelete(Remove)] Entity? From;
+  /// The event's class, by full name — what the line says when its event can no longer be read back.
+  [Required, MaxLength(200)] string Type;
+  /// The event as `Events.Write` keeps it — its members, each record as its type and id. Said when read.
+  [Classification(Personal.Content)] string Payload;
+  /// When it happened — when the event was raised.
+  DateTime At;
+  security {
+    // Readable to who reads activity; which lines a reader is SHOWN is the record's own security (`ActivityOf`).
+    allow read when ReadsActivity;
+  }
+}
+
+/// Every event the app raises, about a record, is a line on that record's timeline — and on each record it rolls up to
+/// (`[RollsUpTo]`). Heard after the commit that raised it, as the app.
+///
+/// ⚑ NO `[Interest]`, ON PURPOSE: a timeline wants every event about a record, the app's own `internal` ones too, and
+///   which events those are is not something a read could narrow — so it hears them all, and an app that uses it pays
+///   one delivery for each commit that raised one.
+[On]
+internal void Record(Event e) {
+  var about = Events.About(e);
+  if (about == null) { return; }
+  var delivery = Events.Delivery();
+  var at = delivery == null ? DateTime.UtcNow : delivery.RaisedAt;
+  var type = Events.Type(e);
+  var payload = Events.Write(e);
+  new ActivityEntry { About = about, Type = type, Payload = payload, At = at };
+  foreach (var up in Records.RollsUpTo(about)) {
+    new ActivityEntry { About = up, From = about, Type = type, Payload = payload, At = at };
+  }
+  if (!ActivityWatch.Any()) { new ActivityWatch(); }
+}
+
+// ── reading it ───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// One line of a timeline, as its reader reads it.
+public class ActivityLine {
+  public Guid Id;
+  public DateTime At;
+  /// What happened, in the reader's words — "Ines accepted the quote."
+  public string Said = "";
+  /// When it happened to a record this one rolls up to: that record's line ("Quote Q-1042") and where it opens.
+  public string From = "";
+  public string FromLink = "";
+}
+
+/// What happened to the record whose id is `record`, newest first — `take` lines at most. Empty for a reader who may not
+/// read the record: the record is read as THEM, through the line, and one they may not read reads as nothing.
+public List<ActivityLine> ActivityOf(Guid record, int take = 50) {
+  var entries = ActivityEntry.Where(x => x.About.Id == record).OrderByDescending(x => x.At).Take(take).ToList();
+  List<ActivityLine> lines = [];
+  if (entries.Count == 0) { return lines; }
+  // SECURITY-INVARIANT(activity-is-shown-only-on-a-record-its-reader-may-read): the record is read through the line AS
+  // THE READER — an `Entity` they may not read reads as nothing — and then no line of its timeline is shown, not even
+  // that something happened. Guarded by tests/activity.test.osy `nobody_reads_the_activity_of_a_record_they_may_not_read`.
+  if (entries[0].About == null) { return lines; }
+  var catalog = Events.Catalog();
+  foreach (var x in entries) {
+    var said = Said(x, catalog);
+    var line = new ActivityLine { Id = x.Id, At = x.At, Said = said };
+    if (x.From != null) {
+      line.From = Records.Title(x.From!);
+      line.FromLink = Records.Link(x.From!);
+    }
+    lines.Add(line);
+  }
+  return lines;
+}
+
+/// What a line says: its event's own sentence, as the reader may read it — or the event's label, when a record it names
+/// is not theirs to read (or no longer there).
+string Said(ActivityEntry x, List<EventInfo> catalog) {
+  var e = Events.Read(x.Payload);
+  if (e != null) { return e!.Sentence(); }
+  var type = x.Type;
+  var info = catalog.FirstOrDefault(c => c.Type == type);
+  return info == null ? "Something happened." : info!.Label;
+}
+
+// ── keeping it to its length ──────────────────────────────────────────────────────────────────────────────────────────
+
+/// Whether the hourly sweep runs. ⚠ Appended, never inserted.
+public enum ActivityWatchState {
+  [Label("Checking hourly")] Watching,
+  [Label("Stopped")] Stopped,
+}
+
+/// The one row the hourly sweep runs on — made with the first line.
+public entity ActivityWatch {
+  ActivityWatchState State;
+  security {
+    allow read when ReadsActivity;
+  }
+}
+
+/// Every hour: lines older than `Keep` leave the timeline.
+public workflow ActivityClock {
+  Tracks    = ActivityWatch.State;
+  Autostart = true;
+  Initial   = Watching;
+
+  event Stop();
+
+  state Watching {
+    subscribe Stop() as Stopping {
+      Finished {
+        Within = TimeSpan.FromDays(36500);
+        Remind Tick(After = TimeSpan.FromHours(1), ThenEvery = TimeSpan.FromHours(1)) { SweepActivity(DurableClock.UtcNow); }
+        Unfinished { }
+      }
+    }
+    on Stopping() { goto Stopped; }
+  }
+  terminal cancel Stopped { }
+}
+
+/// One tick at `now`: up to 500 lines older than `Keep` are removed. Answers how many.
+public int SweepActivity(DateTime now) {
+  var cutoff = now - App.Setting<ActivitySetup>().Keep;
+  var gone = 0;
+  foreach (var x in ActivityEntry.Where(x => x.At < cutoff).Take(500).ToList()) {
+    x.Delete();
+    gone = gone + 1;
+  }
+  return gone;
+}

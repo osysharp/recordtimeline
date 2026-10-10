@@ -1,0 +1,29 @@
+// Osysharp.RecordTimeline — what happened to a record, on its timeline: every event the app raises about it, from any kit or
+// from the app, said in the reader's words when it is read — and, on a record that others roll up to, what happened to
+// those too (a quote's acceptance on its opportunity).
+//
+// The kit names no event and no record. It hears EVERY event (`[On] void Record(Event e)`), keeps one line for each on
+// the record the event is about (its first record member) and on each record that one `[RollsUpTo]`, and says each line
+// with the event's own sentence (`e.Sentence()`), as whoever reads the timeline may read it.
+//
+// ⚑ THE APP SAYS ONE THING — who reads a record's activity:
+//     policy ReadsActivity => IsAgent;
+//   …and places the timeline where a record is shown: `ActivityTimeline(order.Id)`.
+// ⚑ A LINE IS SHOWN ONLY TO SOMEBODY WHO MAY READ ITS RECORD, and says only what they may read of it: an event whose
+//   records they may not read says its label alone.
+// ⚑ KEPT FOR A YEAR by default (`app.Activity = new ActivitySetup { Keep = … }`), then removed by an hourly sweep; a
+//   line goes with its record.
+package Osysharp.RecordTimeline {
+  version "0.1.3";
+  minPlatform "0.9.0";
+  summary     "a record's timeline, from the events the app and its kits raise — one line per event on the record it is about and on each record it rolls up to, said in the reader's words from the event's own sentence, shown only to somebody who may read the record, kept for a declared time; one component to place it on a record's page.";
+  model "model/**/*.osy";
+  // The personal data its own fields hold (`[Classification(Personal.X)]`): what an event carried.
+  personal Content;
+  use Osysharp.Identity@0;
+  // The hourly sweep that keeps the timeline to its declared length is a workflow.
+  use Osysharp.Workflow;
+  // The timeline component — themed by the app.
+  use Osysharp.Ui;
+  tests "tests";
+}
