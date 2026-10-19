@@ -14,8 +14,8 @@
 // ⚑ KEPT FOR A YEAR by default (`app.Activity = new ActivitySetup { Keep = … }`), then removed by an hourly sweep; a
 //   line goes with its record.
 package Osysharp.RecordTimeline {
-  version "0.1.3";
-  minPlatform "0.9.0";
+  version "0.2.0";
+  minPlatform "0.14.0";
   summary     "a record's timeline, from the events the app and its kits raise — one line per event on the record it is about and on each record it rolls up to, said in the reader's words from the event's own sentence, shown only to somebody who may read the record, kept for a declared time; one component to place it on a record's page.";
   model "model/**/*.osy";
   // The personal data its own fields hold (`[Classification(Personal.X)]`): what an event carried.
