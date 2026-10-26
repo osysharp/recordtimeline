@@ -45,3 +45,87 @@ ActivityTimeline(quote.Id);                       // on the record's page
 
 Every behaviour above is proven against a small sales pipeline: a quote's events on its opportunity, a line said as it
 is read, a private deal nobody else sees the timeline of, the retention sweep, and the timeline on the record's page.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Identity;
+using Osysharp.RecordTimeline;
+using ActivityKitTests;
+
+[Test(Pipeline)]
+void a_quote_event_appears_on_its_opportunitys_activity() {
+  var q = QuoteOf("Q-17");
+  runas (Sam) { SendQuote(q); }
+  Background.Settle();
+  runas (Sam) { AcceptQuote(q); }
+  Background.Settle();
+  runas (Sam) {
+    Assert.Equal(["Sam Ek took the yes on Q-17 fit-out phase one.", "Quote sent"], SaidOn(q.Id));
+    var opp = Opportunity.Single(o => o.Name == "Harbour fit-out");
+    Assert.Equal(["Sam Ek took the yes on Q-17 fit-out phase one. [Q-17 fit-out phase one]",
+                  "Quote sent [Q-17 fit-out phase one]"], SaidOn(opp.Id));
+  }
+}
+```
+
+From [`tests/activity.test.osy`](tests/activity.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.RecordTimeline;
+using ActivityKitTests;
+
+[Test(Pipeline)]
+void a_line_is_said_when_it_is_read() {
+  var q = QuoteOf("Q-17");
+  runas (Sam) { AcceptQuote(q); }
+  Background.Settle();
+  runas (Ola) {
+    var renamed = Quote.Single(x => x.Id == q.Id);
+    renamed.Title = "Q-17 fit-out, all phases";
+    UnitOfWork.Commit();
+  }
+  runas (Sam) { Assert.Equal(["Sam Ek took the yes on Q-17 fit-out, all phases."], SaidOn(q.Id)); }
+}
+```
+
+From [`tests/activity.test.osy`](tests/activity.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.RecordTimeline;
+using ActivityKitTests;
+
+[Test(Pipeline)]
+void nobody_reads_the_activity_of_a_record_they_may_not_read() {
+  var q = QuoteOf("Q-18");
+  runas (Ola) { AcceptQuote(q); }
+  Background.Settle();
+  Guid opp = Guid.Empty;
+  runas (Ola) {
+    opp = Opportunity.Single(o => o.Name == "Board-only acquisition").Id;
+    Assert.Equal(["Ola Strand took the yes on Q-18 due diligence."], SaidOn(q.Id));
+    Assert.Equal(1, SaidOn(opp).Count);
+  }
+  runas (Sam) {
+    Assert.Empty(SaidOn(q.Id));
+    Assert.Empty(SaidOn(opp));
+  }
+}
+```
+
+From [`tests/activity.test.osy`](tests/activity.test.osy).
+
+## Learn more
+
+- [The Osysharp.RecordTimeline reference](https://osysharp.com/reference/ui/activity-kit/)
+- [Osysharp.RecordTimeline in the package catalogue](https://osysharp.com/packages/#osysharp-recordtimeline)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).
